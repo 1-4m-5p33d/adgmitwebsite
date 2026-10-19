@@ -21,13 +21,23 @@ const SwiftBackground = () => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
-    if (!ctx) return
 
-    let width = (canvas.width = window.innerWidth)
-    let height = (canvas.height = window.innerHeight)
+    // Canvas covers the FULL document height — scrolls with the page
+    const setSize = () => {
+      canvas.width = document.documentElement.scrollWidth
+      canvas.height = document.documentElement.scrollHeight
+    }
+    setSize()
 
-    // Grid-based spread ensures even distribution without clumping
-    const gridSpread = (count, w, h, jitter = 0.8) => {
+    // Re-measure when page layout shifts (lazy images, dynamic sections, etc.)
+    const ro = new ResizeObserver(setSize)
+    ro.observe(document.body)
+
+    const W = canvas.width
+    const H = canvas.height
+
+    // Grid-based spread — no clumping, covers the whole document evenly
+    const gridSpread = (count, w, h, jitter = 0.82) => {
       const cols = Math.ceil(Math.sqrt(count * (w / h)))
       const rows = Math.ceil(count / cols)
       const cellW = w / cols
@@ -44,138 +54,105 @@ const SwiftBackground = () => {
       return points
     }
 
-    // Dynamic viewport-capped counts (keeps CPU usage ultra-low)
-    const NODE_COUNT = Math.min(60, Math.max(30, Math.floor((width * height) / 32000)))
-    const WORD_COUNT = Math.min(32, Math.max(16, Math.floor((width * height) / 60000)))
+    // Scale keyword count to full page height — kept sparse to avoid clutter
+    const repeatCount = Math.ceil((H / 900) * SWIFT_KEYWORDS.length * 0.4)
+    const allKeywords = Array.from(
+      { length: repeatCount },
+      (_, i) => SWIFT_KEYWORDS[i % SWIFT_KEYWORDS.length]
+    )
 
-    // --- Constellation nodes (dots + lines) ---
-    const nodePositions = gridSpread(NODE_COUNT, width, height)
+    // --- Floating words (no dots, no lines) ---
+    const wordPositions = gridSpread(allKeywords.length, W, H)
+    const words = allKeywords.map((label, i) => ({
+      x: wordPositions[i].x,
+      y: wordPositions[i].y,
+      vx: (Math.random() - 0.5) * 0.28,
+      vy: (Math.random() - 0.5) * 0.28,
+      label,
+      bold: Math.random() < 0.15,
+      opacity: 0.18 + Math.random() * 0.28,
+      fontSize: 11 + Math.random() * 5,
+    }))
+
+    // --- Constellation nodes (dots + lines, no labels) ---
+    // ~1 node per 8000px² → dense enough to form proper constellations
+    const NODE_COUNT = Math.max(150, Math.floor((W * H) / 8000))
+    const nodePositions = gridSpread(NODE_COUNT, W, H)
     const nodes = nodePositions.map((pos) => ({
       x: pos.x,
       y: pos.y,
       vx: (Math.random() - 0.5) * 0.32,
       vy: (Math.random() - 0.5) * 0.32,
-      r: 1.5 + Math.random() * 1.5,
+      r: 1.5 + Math.random() * 2,
+      opacity: 0.25 + Math.random() * 0.3,
     }))
 
-    // --- Floating keywords ---
-    const wordPositions = gridSpread(WORD_COUNT, width, height)
-    const words = wordPositions.map((pos, i) => ({
-      x: pos.x,
-      y: pos.y,
-      vx: (Math.random() - 0.5) * 0.28,
-      vy: (Math.random() - 0.5) * 0.28,
-      label: SWIFT_KEYWORDS[i % SWIFT_KEYWORDS.length],
-      bold: Math.random() < 0.15,
-      opacity: 0.2 + Math.random() * 0.25,
-    }))
-
-    const CONNECT_DIST = 140
-    const CONNECT_DIST_SQ = CONNECT_DIST * CONNECT_DIST
-
-    const handleResize = () => {
-      width = canvas.width = window.innerWidth
-      height = canvas.height = window.innerHeight
-      // Re-clamp positions to within new viewport
-      for (const node of nodes) {
-        if (node.x > width) node.x = width * Math.random()
-        if (node.y > height) node.y = height * Math.random()
-      }
-      for (const word of words) {
-        if (word.x > width) word.x = width * Math.random()
-        if (word.y > height) word.y = height * Math.random()
-      }
-    }
-
-    window.addEventListener('resize', handleResize)
+    const CONNECT_DIST = 150
 
     const draw = () => {
-      ctx.clearRect(0, 0, width, height)
-      const dark = document.documentElement.classList.contains('dark')
-
-      // 1. Update nodes positions & bounce off viewport bounds
-      for (let i = 0; i < nodes.length; i++) {
-        const node = nodes[i]
+      
+      ctx.clearRect(0, 0, W, H)
+      const dark = document.documentElement.classList.contains("dark");
+      // Move nodes, bounce off full document bounds
+      for (const node of nodes) {
         node.x += node.vx
         node.y += node.vy
         if (node.x < 0 || node.x > width) node.vx *= -1
         if (node.y < 0 || node.y > height) node.vy *= -1
       }
 
-      // 2. Lines between nearby nodes (using squared distance to avoid Math.sqrt)
+      // Lines between nearby nodes
       for (let i = 0; i < nodes.length; i++) {
-        const n1 = nodes[i]
         for (let j = i + 1; j < nodes.length; j++) {
-          const n2 = nodes[j]
-          const dx = n1.x - n2.x
-          const dy = n1.y - n2.y
-          const distSq = dx * dx + dy * dy
-
-          if (distSq < CONNECT_DIST_SQ) {
-            const dist = Math.sqrt(distSq)
+          const dx = nodes[i].x - nodes[j].x
+          const dy = nodes[i].y - nodes[j].y
+          const dist = Math.sqrt(dx * dx + dy * dy)
+          if (dist < CONNECT_DIST) {
             const alpha = (1 - dist / CONNECT_DIST) * 0.18
             ctx.beginPath()
             ctx.strokeStyle = dark
               ? `rgba(255,255,255,${alpha * 0.35})`
-              : `rgba(45,45,45,${alpha * 1.9})`
+              : `rgba(45,45,45,${alpha * 1.9})`;
             ctx.lineWidth = 0.8
-            ctx.moveTo(n1.x, n1.y)
-            ctx.lineTo(n2.x, n2.y)
+            ctx.moveTo(nodes[i].x, nodes[i].y)
+            ctx.lineTo(nodes[j].x, nodes[j].y)
             ctx.stroke()
           }
         }
       }
 
-      // 3. Batch draw all dots in a single path
-      ctx.beginPath()
-      ctx.fillStyle = dark
-        ? 'rgba(255, 255, 255, 0.4)'
-        : 'rgba(45, 45, 45, 0.5)'
-      for (let i = 0; i < nodes.length; i++) {
-        const node = nodes[i]
-        ctx.moveTo(node.x + node.r, node.y)
+      // Dots
+      for (const node of nodes) {
+        ctx.beginPath()
         ctx.arc(node.x, node.y, node.r, 0, Math.PI * 2)
+        ctx.fillStyle = dark
+          ? `rgba(255,255,255,${node.opacity * 0.35})`
+          : `rgba(45,45,45,${node.opacity * 1.4})`;
+        ctx.fill()
       }
-      ctx.fill()
 
-      // 4. Update and draw floating words
-      // Set font once per style to prevent expensive font cache thrashing
-      const fontNormal = "400 13px 'SF Mono', 'Fira Code', monospace"
-      const fontBold = "600 13px 'SF Mono', 'Fira Code', monospace"
-
-      for (let i = 0; i < words.length; i++) {
-        const word = words[i]
+      // Move words, bounce off full document bounds
+      for (const word of words) {
         word.x += word.vx
         word.y += word.vy
-        if (word.x < -80 || word.x > width + 80) word.vx *= -1
-        if (word.y < 0 || word.y > height) word.vy *= -1
+        if (word.x < -80 || word.x > W + 80) word.vx *= -1
+        if (word.y < 0 || word.y > H) word.vy *= -1
 
-        ctx.font = word.bold ? fontBold : fontNormal
+        ctx.font = `${word.bold ? '600' : '400'} ${word.fontSize}px 'SF Mono', 'Fira Code', monospace`
         ctx.fillStyle = dark
-          ? `rgba(255,255,255,${word.opacity * 0.25})`
-          : `rgba(30,30,30,${word.opacity * 0.85})`
+          ? `rgba(255,255,255,${word.opacity * 0.22})`
+          : `rgba(30,30,30,${word.opacity * 0.8})`;
         ctx.fillText(word.label, word.x, word.y)
       }
 
       animRef.current = requestAnimationFrame(draw)
     }
 
-    // Pause when tab is in background to save 100% CPU/battery
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        if (animRef.current) cancelAnimationFrame(animRef.current)
-      } else {
-        animRef.current = requestAnimationFrame(draw)
-      }
-    }
-
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    animRef.current = requestAnimationFrame(draw)
+    draw()
 
     return () => {
-      if (animRef.current) cancelAnimationFrame(animRef.current)
-      window.removeEventListener('resize', handleResize)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      cancelAnimationFrame(animRef.current)
+      ro.disconnect()
     }
   }, [])
 
